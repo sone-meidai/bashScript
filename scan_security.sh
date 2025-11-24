@@ -45,7 +45,7 @@ REPORT_OUTPUT_FULL_PATH=""
 REQUIRED_DOCKER_IMAGES=(
   "sqasupport/trivy:latest"
   "sqasupport/semgrep:latest"
-  "zricethezav/gitleaks:latest"
+  "sqasupport/trufflehog:latest"
 )
 
 # --- Functions ---
@@ -133,7 +133,7 @@ echo -e "${BLUE}${CLOCK_ICON} Starting parallel scans...${NC}"
 
 # 1. Run Trivy for vulnerability scanning (SCA) in background
 echo -e "${BLUE}${GEAR_ICON} Running Trivy (SCA) scan in background...${NC}"
-docker run --rm \
+docker run --rm --pull=always --network=none \
   -v "$SCAN_DIRECTORY:/src" \
   -v "$REPORT_OUTPUT_FULL_PATH:/output" \
   sqasupport/trivy fs /src --scanners vuln --skip-db-update --include-dev-deps --format sarif > "$REPORT_OUTPUT_FULL_PATH/sca-report-$PROJECT_NAME.sarif" &
@@ -142,21 +142,21 @@ echo -e "${INFO_ICON} Trivy scan started (PID: $TRIVY_PID).${NC}"
 
 # 2. Run Semgrep for static analysis (SAST) in background
 echo -e "${BLUE}${GEAR_ICON} Running Semgrep (SAST) scan in background...${NC}"
-docker run --rm --network=none \
+docker run --rm --pull=always --network=none \
   -v "$SCAN_DIRECTORY:/src" \
   -v "$REPORT_OUTPUT_FULL_PATH:/output" \
-  sqasupport/semgrep semgrep scan /src --dataflow-traces --config=/rules --metrics=off --sarif --sarif-output="/output/semgrep-report-$PROJECT_NAME.sarif" &
+  sqasupport/semgrep:latest semgrep scan /src --dataflow-traces --severity=WARNING --severity=ERROR -q --metrics=off --sarif --sarif-output="/output/semgrep-report-$PROJECT_NAME.sarif" &
 SEMGREP_PID=$! # Store PID for later wait
 echo -e "${INFO_ICON} Semgrep scan started (PID: $SEMGREP_PID).${NC}"
 
-# 3. Run Gitleaks for secret detection in background
-echo -e "${BLUE}${GEAR_ICON} Running Gitleaks scan in background...${NC}"
-docker run --rm \
+# 3. Run TruffleHog for secret detection in background
+echo -e "${BLUE}${GEAR_ICON} Running TruffleHog scan in background...${NC}"
+docker run --rm --network=none \
   -v "$SCAN_DIRECTORY:/src" \
   -v "$REPORT_OUTPUT_FULL_PATH:/output" \
-  zricethezav/gitleaks:latest dir /src -f json -r "/output/gitleaks-$PROJECT_NAME.json" &
-GITLEAKS_PID=$! # Store PID for later wait
-echo -e "${INFO_ICON} Gitleaks scan started (PID: $GITLEAKS_PID).${NC}"
+  sqasupport/trufflehog:latest filesystem /src --no-verification --no-update --json > "$REPORT_OUTPUT_FULL_PATH/trufflehog-$PROJECT_NAME.json" &
+TRUFFLEHOG_PID=$! # Store PID for later wait
+echo -e "${INFO_ICON} TruffleHog scan started (PID: $TRUFFLEHOG_PID).${NC}"
 
 # 6. Grep for password/secret patterns specifically in .env files in background
 echo -e "${BLUE}${GEAR_ICON} Running grep for .env file patterns in background...${NC}"
@@ -203,8 +203,8 @@ echo -e "${GREEN}${CHECK_ICON} Trivy scan process completed.${NC}"
 wait $SEMGREP_PID
 echo -e "${GREEN}${CHECK_ICON} Semgrep scan process completed.${NC}"
 
-wait $GITLEAKS_PID
-echo -e "${GREEN}${CHECK_ICON} Gitleaks scan process completed.${NC}"
+wait $TRUFFLEHOG_PID
+echo -e "${GREEN}${CHECK_ICON} TruffleHog scan process completed.${NC}"
 
 wait $GREP_ENV_PID
 echo -e "${GREEN}${CHECK_ICON} Grep for .env files process completed.${NC}"
