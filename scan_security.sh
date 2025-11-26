@@ -18,30 +18,24 @@ DOC_ICON="📄"
 CLOCK_ICON="⏰"
 
 # --- Configuration ---
-# Usage: ./scan_security.sh <report_output_base_directory> <scan_target_directory>
+# Usage: ./scan_security.sh <report_output_base_directory> <scan_target_directory> [scan_number]
 
 # Check if both required arguments are provided
 if [ -z "$1" ] || [ -z "$2" ]; then
-  echo -e "${RED}${CROSS_ICON} Usage: $0 <report_output_base_directory> <scan_target_directory>${NC}"
+  echo -e "${RED}${CROSS_ICON} Usage: $0 <report_output_base_directory> <scan_target_directory> [scan_number]${NC}"
   echo -e "${YELLOW}${INFO_ICON}   <report_output_base_directory>: The base directory where scan reports will be saved (e.g., /var/sec_reports)${NC}"
   echo -e "${YELLOW}${INFO_ICON}   <scan_target_directory>: The directory containing the project to be scanned (e.g., /home/user/my_project)${NC}"
+  echo -e "${YELLOW}${INFO_ICON}   [scan_number] (optional): Run specific scan only (1=Trivy, 2=Semgrep, 3=TruffleHog, 4-7=Grep scans, ALL=all scans)${NC}"
   exit 1
 fi
 
-# Get the raw path for the report base directory
 REPORT_BASE_DIR_RAW="$1"
-# Get absolute path for scan directory, which is expected to exist
 SCAN_DIRECTORY=$(realpath "$2")
+SCAN_NUMBER="${3:-ALL}"
 
-# Define a variable for the project name.
-# This will be derived from the last component of the SCAN_DIRECTORY path.
 PROJECT_NAME=$(basename "$SCAN_DIRECTORY")
-
-# Reports will be placed in a subdirectory named after the PROJECT_NAME within the REPORT_BASE_DIR.
-# We will construct the full path after ensuring REPORT_BASE_DIR exists and getting its realpath.
 REPORT_OUTPUT_FULL_PATH=""
 
-# List of Docker images required for the scans
 REQUIRED_DOCKER_IMAGES=(
   "sqasupport/trivy:latest"
   "sqasupport/semgrep:latest"
@@ -76,6 +70,7 @@ echo -e "${BLUE}=====================================================${NC}"
 echo -e "${INFO_ICON} Scan Target Directory: ${CYAN}${SCAN_DIRECTORY}${NC}"
 echo -e "${INFO_ICON} Report Output Base Directory (raw): ${CYAN}${REPORT_BASE_DIR_RAW}${NC}"
 echo -e "${INFO_ICON} Project Name (derived): ${CYAN}${PROJECT_NAME}${NC}"
+echo -e "${INFO_ICON} Scan Mode: ${CYAN}${SCAN_NUMBER}${NC}"
 echo -e "${BLUE}-----------------------------------------------------${NC}"
 
 # Validate the scan directory
@@ -132,48 +127,68 @@ echo -e "${BLUE}${CLOCK_ICON} Starting parallel scans...${NC}"
 # We will map REPORT_OUTPUT_FULL_PATH to /output inside containers.
 
 # 1. Run Trivy for vulnerability scanning (SCA) in background
-echo -e "${BLUE}${GEAR_ICON} Running Trivy (SCA) scan in background...${NC}"
-docker run --rm --pull=always --network=none \
-  -v "$SCAN_DIRECTORY:/src" \
-  -v "$REPORT_OUTPUT_FULL_PATH:/output" \
-  sqasupport/trivy fs /src --scanners vuln --skip-db-update --include-dev-deps --format sarif > "$REPORT_OUTPUT_FULL_PATH/sca-report-$PROJECT_NAME.sarif" &
-TRIVY_PID=$! # Store PID for later wait
-echo -e "${INFO_ICON} Trivy scan started (PID: $TRIVY_PID).${NC}"
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "1" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running Trivy (SCA) scan in background...${NC}"
+  docker run --rm --pull=always --network=none \
+    -v "$SCAN_DIRECTORY:/src" \
+    -v "$REPORT_OUTPUT_FULL_PATH:/output" \
+    sqasupport/trivy fs /src --scanners vuln --skip-db-update --include-dev-deps --format sarif > "$REPORT_OUTPUT_FULL_PATH/1.sca-report-$PROJECT_NAME.sarif" &
+  TRIVY_PID=$! # Store PID for later wait
+  echo -e "${INFO_ICON} Trivy scan started (PID: $TRIVY_PID).${NC}"
+else
+  TRIVY_PID=""
+fi
 
 # 2. Run Semgrep for static analysis (SAST) in background
-echo -e "${BLUE}${GEAR_ICON} Running Semgrep (SAST) scan in background...${NC}"
-docker run --rm --pull=always --network=none \
-  -v "$SCAN_DIRECTORY:/src" \
-  -v "$REPORT_OUTPUT_FULL_PATH:/output" \
-  sqasupport/semgrep:latest semgrep scan /src --dataflow-traces --severity=WARNING --severity=ERROR -q --metrics=off --sarif --sarif-output="/output/semgrep-report-$PROJECT_NAME.sarif" &
-SEMGREP_PID=$! # Store PID for later wait
-echo -e "${INFO_ICON} Semgrep scan started (PID: $SEMGREP_PID).${NC}"
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "2" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running Semgrep (SAST) scan in background...${NC}"
+  docker run --rm --pull=always --network=none \
+    -v "$SCAN_DIRECTORY:/src" \
+    -v "$REPORT_OUTPUT_FULL_PATH:/output" \
+    sqasupport/semgrep:latest semgrep scan /src --dataflow-traces --severity=WARNING --severity=ERROR -q --metrics=off --sarif --sarif-output="/output/2.semgrep-report-$PROJECT_NAME.sarif" &
+  SEMGREP_PID=$! # Store PID for later wait
+  echo -e "${INFO_ICON} Semgrep scan started (PID: $SEMGREP_PID).${NC}"
+else
+  SEMGREP_PID=""
+fi
 
 # 3. Run TruffleHog for secret detection in background
-echo -e "${BLUE}${GEAR_ICON} Running TruffleHog scan in background...${NC}"
-docker run --rm --network=none \
-  -v "$SCAN_DIRECTORY:/src" \
-  -v "$REPORT_OUTPUT_FULL_PATH:/output" \
-  sqasupport/trufflehog:latest filesystem /src --no-verification --no-update --json > "$REPORT_OUTPUT_FULL_PATH/trufflehog-$PROJECT_NAME.json" &
-TRUFFLEHOG_PID=$! # Store PID for later wait
-echo -e "${INFO_ICON} TruffleHog scan started (PID: $TRUFFLEHOG_PID).${NC}"
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "3" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running TruffleHog scan in background...${NC}"
+  docker run --rm --network=none \
+    -v "$SCAN_DIRECTORY:/src" \
+    -v "$REPORT_OUTPUT_FULL_PATH:/output" \
+    sqasupport/trufflehog:latest filesystem /src --no-verification --no-update --json > "$REPORT_OUTPUT_FULL_PATH/3.trufflehog-$PROJECT_NAME.json" &
+  TRUFFLEHOG_PID=$! # Store PID for later wait
+  echo -e "${INFO_ICON} TruffleHog scan started (PID: $TRUFFLEHOG_PID).${NC}"
+else
+  TRUFFLEHOG_PID=""
+fi
 
 # 6. Grep for password/secret patterns specifically in .env files in background
-echo -e "${BLUE}${GEAR_ICON} Running grep for .env file patterns in background...${NC}"
-grep -i -r -E "(password|secret|token|key)" --include="*.env" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/grep-env-$PROJECT_NAME.txt" &
-GREP_ENV_PID=$! # Store PID for later wait
-echo -e "${INFO_ICON} Grep for .env files started (PID: $GREP_ENV_PID).${NC}"
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "4" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running grep for .env file patterns in background...${NC}"
+  grep -i -r -E "(password|secret|token|key)" --include="*.env" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/4.grep-env-$PROJECT_NAME.txt" &
+  GREP_ENV_PID=$! # Store PID for later wait
+  echo -e "${INFO_ICON} Grep for .env files started (PID: $GREP_ENV_PID).${NC}"
+else
+  GREP_ENV_PID=""
+fi
 
 # 7. Grep for 'password' in git log history in background
-echo -e "${BLUE}${GEAR_ICON} Running grep for 'password' in git log in background...${NC}"
-# Check if a .git directory exists within the SCAN_DIRECTORY before attempting to run git log.
-if [ -d "$SCAN_DIRECTORY/.git" ]; then
-  git -C "$SCAN_DIRECTORY" log -p | grep -i 'password' > "$REPORT_OUTPUT_FULL_PATH/grep-gitlog-$PROJECT_NAME.txt" &
-  GITLOG_PID=$! # Store PID for later wait
-  echo -e "${INFO_ICON} Grep for git log started (PID: $GITLOG_PID).${NC}"
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "5" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running grep for 'password' in git log in background...${NC}"
+  # Check if a .git directory exists within the SCAN_DIRECTORY before attempting to run git log.
+  if [ -d "$SCAN_DIRECTORY/.git" ]; then
+    git -C "$SCAN_DIRECTORY" log -p | grep -i 'password' > "$REPORT_OUTPUT_FULL_PATH/5.grep-gitlog-$PROJECT_NAME.txt" &
+    GITLOG_PID=$! # Store PID for later wait
+    echo -e "${INFO_ICON} Grep for git log started (PID: $GITLOG_PID).${NC}"
+  else
+    echo -e "${YELLOW}${INFO_ICON} Skipping git log scan: .git directory not found in ${CYAN}$SCAN_DIRECTORY${NC}"
+    GITLOG_PID="" # Mark as not run
+  fi
 else
-  echo -e "${YELLOW}${INFO_ICON} Skipping git log scan: .git directory not found in ${CYAN}$SCAN_DIRECTORY${NC}"
-  GITLOG_PID="" # Mark as not run
+  GITLOG_PID=""
 fi
 
 echo -e "${BLUE}-----------------------------------------------------${NC}"
@@ -182,32 +197,44 @@ echo -e "${BLUE}${CLOCK_ICON} Running sequential grep scans...${NC}"
 # --- Sequential Grep Scans (must run in order due to appending to the same file) ---
 
 # 4. Grep for common password/secret patterns in scan directory
-echo -e "${BLUE}${GEAR_ICON} Running grep for password/secret patterns (type 1)...${NC}"
-grep -i -r -E "(password|passwd|secret|api[-]*key|token|access[-]*key|private[-]*key|client[-]secret)\s" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/grep-password-$PROJECT_NAME.txt"
-echo -e "${GREEN}${CHECK_ICON} Grep scan (type 1) completed. Results saved to ${DOC_ICON} ${CYAN}$REPORT_OUTPUT_FULL_PATH/grep-password-$PROJECT_NAME.txt${NC}"
-echo ""
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "6" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running grep for password/secret patterns (type 1)...${NC}"
+  grep -i -r -E "(password|passwd|secret|api[-]*key|token|access[-]*key|private[-]*key|client[-]secret)\s" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/6.grep-password-$PROJECT_NAME.txt"
+  echo -e "${GREEN}${CHECK_ICON} Grep scan (type 1) completed. Results saved to ${DOC_ICON} ${CYAN}$REPORT_OUTPUT_FULL_PATH/6.grep-password-$PROJECT_NAME.txt${NC}"
+  echo ""
+fi
 
 # 5. Grep for password/secret patterns with assignment operator
-echo -e "${BLUE}${GEAR_ICON} Running grep for password/secret patterns (type 2)...${NC}"
-grep -i -r -E "(password|passwd|secret|api[-]*key|token|access[-]key|private[-]*key|client[-]secret)\s=\s['\"]" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/grep-key-$PROJECT_NAME.txt"
-echo -e "${GREEN}${CHECK_ICON} Grep scan (type 2) completed. Results saved to ${DOC_ICON} ${CYAN}$REPORT_OUTPUT_FULL_PATH/grep-key-$PROJECT_NAME.txt${NC}"
-echo ""
+if [ "$SCAN_NUMBER" = "ALL" ] || [ "$SCAN_NUMBER" = "7" ]; then
+  echo -e "${BLUE}${GEAR_ICON} Running grep for password/secret patterns (type 2)...${NC}"
+  grep -i -r -E "(password|passwd|secret|api[-]*key|token|access[-]key|private[-]*key|client[-]secret)\s=\s['\"]" "$SCAN_DIRECTORY" > "$REPORT_OUTPUT_FULL_PATH/7.grep-key-$PROJECT_NAME.txt"
+  echo -e "${GREEN}${CHECK_ICON} Grep scan (type 2) completed. Results saved to ${DOC_ICON} ${CYAN}$REPORT_OUTPUT_FULL_PATH/7.grep-key-$PROJECT_NAME.txt${NC}"
+  echo ""
+fi
 
 echo -e "${BLUE}-----------------------------------------------------${NC}"
 echo -e "${BLUE}${CLOCK_ICON} Waiting for parallel scans to complete...${NC}"
 
 # Wait for all background jobs to finish
-wait $TRIVY_PID
-echo -e "${GREEN}${CHECK_ICON} Trivy scan process completed.${NC}"
+if [ -n "$TRIVY_PID" ]; then
+  wait $TRIVY_PID
+  echo -e "${GREEN}${CHECK_ICON} Trivy scan process completed.${NC}"
+fi
 
-wait $SEMGREP_PID
-echo -e "${GREEN}${CHECK_ICON} Semgrep scan process completed.${NC}"
+if [ -n "$SEMGREP_PID" ]; then
+  wait $SEMGREP_PID
+  echo -e "${GREEN}${CHECK_ICON} Semgrep scan process completed.${NC}"
+fi
 
-wait $TRUFFLEHOG_PID
-echo -e "${GREEN}${CHECK_ICON} TruffleHog scan process completed.${NC}"
+if [ -n "$TRUFFLEHOG_PID" ]; then
+  wait $TRUFFLEHOG_PID
+  echo -e "${GREEN}${CHECK_ICON} TruffleHog scan process completed.${NC}"
+fi
 
-wait $GREP_ENV_PID
-echo -e "${GREEN}${CHECK_ICON} Grep for .env files process completed.${NC}"
+if [ -n "$GREP_ENV_PID" ]; then
+  wait $GREP_ENV_PID
+  echo -e "${GREEN}${CHECK_ICON} Grep for .env files process completed.${NC}"
+fi
 
 if [ -n "$GITLOG_PID" ]; then # Only wait if git log was actually run
   wait $GITLOG_PID
